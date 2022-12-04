@@ -1,0 +1,493 @@
+---
+title: "snps_comparison_with_annas"
+author: "Elizaveta Grigoreva"
+date: '2022-10-10'
+output: html_document
+---
+
+```{r, message=FALSE}
+library(stringi)
+library(data.table)
+library(tidyverse)
+library(tools)
+library(data.table)
+library(stringdist)
+library(stringr)
+library(tidyverse)
+library(scales)
+library(ggplot2)
+library(Biostrings)
+
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = "/groups/nordborg/user/elizaveta.grigoreva/genome_evolution_pacbio")
+```
+
+```{r}
+#Load data per chromosome (Anna's SNPs)
+chr1 <- readRDS('data/annas_snps/snps_mx1_final.rds')
+chr2 <- readRDS('data/annas_snps/snps_mx2_final.rds')
+chr3 <- readRDS('data/annas_snps/snps_mx3_final.rds')
+chr4 <- readRDS('data/annas_snps/snps_mx4_final.rds')
+chr5 <- readRDS('data/annas_snps/snps_mx5_final.rds')
+#Load indexies per chromosome (Anna's SNPs)
+chr1_idx <- as.data.frame(readRDS('data/annas_snps/snps_mx1_idx.rds'))
+chr2_idx <- as.data.frame(readRDS('data/annas_snps/snps_mx2_idx.rds'))
+chr3_idx <- as.data.frame(readRDS('data/annas_snps/snps_mx3_idx.rds'))
+chr4_idx <- as.data.frame(readRDS('data/annas_snps/snps_mx4_idx.rds'))
+chr5_idx <- as.data.frame(readRDS('data/annas_snps/snps_mx5_idx.rds'))
+```
+
+```{r}
+#Change chromosome notation per chromosome
+vcf <- as.data.frame(cbind(chr5_idx = chr1_idx$`0`, chr1)) #Combine SNPs per individual and ids for Col0
+colnames(vcf)[1] <- "POS"
+colnames(vcf)[2] <- "REF"
+```
+
+```{r}
+#Add ALT allele frequencies (non-reference)
+uniq_values <- apply(vcf[,3:29],1,unique) #From 3(first sample) to the last ncol(vcf)
+###Transform  list to the matrix to get a list of alternative alleles 
+ALT <- stri_list2matrix(uniq_values, byrow=TRUE) #Chr1
+```
+
+```{r}
+#Make a dataframe of all alternative alleles
+colnames(ALT) <- c("ALT1", "ALT2", "ALT3","ALT4", "ALT5")  #Number of alleles based on the number of columns 
+
+
+#Insert REF Allele into the samples 
+#################
+#test <- head(chr1_vcf)
+
+#for(i in 3:ncol(test)) { 
+#    if (is.na(test[,i ])){
+#      next
+#    }# for-loop over columns
+#    else {
+#    test[ , i] <- paste(test$REF,test[ , i],sep="")}
+    
+#}
+################
+#Insert reference values to each column
+for(i in 3:ncol(vcf)) {       # for-loop over columns
+  vcf[ , i] <- paste(vcf$REF,vcf[ , i],sep="")}
+
+#We have 1st allele always REF. If first allele present but alternative is lost, we will keep this site as NA
+vcf <- data.frame(lapply(vcf, function(x) {
+  gsub("cNA", "NA",
+  gsub("aNA", "NA",
+  gsub("gNA", "NA",
+  gsub("tNA", "NA" , x))))
+  }))
+#Add alternative allele 
+ALT <- as.data.frame(ALT)
+vcf$ALT <- paste0(ALT$ALT1,",",ALT$ALT2,",",ALT$ALT3,",",ALT$ALT4,",", ALT$ALT5 )
+##Remove NA values that represent absence of ALT allele.We are not interested in casese when reference allele is present and alt are not 
+#Remove NAs
+vcf$ALT <- gsub("NA,","",vcf$ALT)
+vcf$ALT <- gsub(",NA,","", vcf$ALT)
+vcf$ALT <- gsub(",NA","", vcf$ALT)
+```
+
+```{r}
+###Make the file Hapmap like
+###Add hapmap-like columns
+vcf$rs<- seq(1:nrow(vcf)) #Insert numeric identifier of SNP
+vcf$alleles <- paste(vcf$REF,vcf$ALT,sep=",") #Insert reference and alternative allele
+vcf$alleles <- sapply(strsplit(vcf$alleles,','), function(x) toString(unique(x))) #Make alleles unique (calculate eneterez of REF+ALT unque combinations, because we are interested in variations)! Keep monomorphic sites for PI calculation
+vcf$counts <- nchar(vcf$alleles)#Calculate number of characters
+vcf <- vcf[vcf$counts==4,] #Filter only bi-allelic variants 4 characters: letter, del, tab, letter)
+vcf$alleles <-  str_replace(vcf$alleles , ', ', '/') #Change delimeter in alleles
+
+###Make HapMap-like file
+vcf$chrom <- '5' #Change it for each chromosome 
+vcf$pos <- vcf$POS
+vcf$strand <- "."
+vcf$center <- "."
+vcf$protLSID <- "."
+vcf$assayLSID <- "."
+vcf$panelLSID <- "."
+vcf$QCcode <- "."
+vcf$assembly <- "."
+
+###Drop unnecessary columns
+vcf$CHROM <- NULL
+vcf$POS <- NULL
+vcf$REF <- NULL
+vcf$ALT <- NULL
+vcf$counts <- NULL
+##Transpose columns 
+vcf <- vcf %>% relocate(rs)
+vcf <- vcf %>% relocate(alleles, .after =  rs)
+vcf <- vcf %>% relocate(chrom, .after =  alleles)
+vcf <- vcf %>% relocate(pos, .after =  chrom)
+vcf <- vcf %>% relocate(strand, .after =  pos)
+vcf <- vcf %>% relocate(assembly, .after =  strand)
+vcf <- vcf %>% relocate(center, .after =  assembly)
+vcf <- vcf %>% relocate(protLSID, .after =  center)
+vcf <- vcf %>% relocate(assayLSID, .after =  protLSID)
+vcf <- vcf %>% relocate(panelLSID, .after =  assayLSID)
+vcf <- vcf %>% relocate(QCcode, .after =  panelLSID)
+
+
+###Change small letters to big
+vcf <- data.frame(lapply(vcf, function(x) {
+  gsub("t", "T",
+  gsub("a", "A",
+  gsub("c", "C",
+  gsub("g", "G",x))))
+  }))
+
+#Remove unrecognized letters 
+vcf_corr <- vcf[!grepl("k|m|r|w|y|n|s|b|h|v|d",vcf$alleles ),]
+vcf_corr$pos <- as.integer(vcf_corr$pos) #Make position integer value 
+###Write to the file
+#write.table(vcf_corr,"/groups/nordborg/user/elizaveta.grigoreva/genome_evolution_pacbio/analyses/004_polymorphism_annas_snps/hmp_parsed/chr5_27acc.hmp",quote=FALSE, row.names = F, sep="\t")
+```
+
+
+```{bash, message=F}
+#Activate conda env 
+source activate /users/elizaveta.grigoreva/.conda/envs/genomeorg
+#Convert HapMap to vcf
+cd /groups/nordborg/user/elizaveta.grigoreva/genome_evolution_pacbio/analyses/004_polymorphism_annas_snps/hmp_parsed
+for i in *hmp;do run_pipeline.pl -Xmx5g -fork1 -h $i -export -exportType VCF -runfork1; done
+
+```
+
+```{bash, message=F}
+##Calculate PI using pixi
+#bgzip and index files
+for i in *.vcf; do bgzip $i; done #bgzip
+for i in *.vcf.gz; do tabix $i; done #index
+
+
+```
+
+```{bash, message=F}
+##Calculate PI using vcftools
+vcftools --gzvcf ../../hmp_parsed/chr5_27acc.vcf.gz --window-pi 500000 --window-pi-step 100000   --out vcftools_chr5_win500000_step100000
+```
+
+
+
+
+
+
+```{r}
+###Plot results
+###Plotting nucleotide diversity
+pi.chr1 <- read.table("analyses/004_polymorphism_annas_snps/pi_annas_snps/vcftools/vcftools_chr1_win500000_step100000.windowed.pi",header=T)
+pi.chr2 <- read.table("analyses/004_polymorphism_annas_snps/pi_annas_snps/vcftools/vcftools_chr2_win500000_step100000.windowed.pi",header=T)
+pi.chr3 <- read.table("analyses/004_polymorphism_annas_snps/pi_annas_snps/vcftools/vcftools_chr3_win500000_step100000.windowed.pi",header=T)
+pi.chr4 <- read.table("analyses/004_polymorphism_annas_snps/pi_annas_snps/vcftools/vcftools_chr4_win500000_step100000.windowed.pi",header=T)
+pi.chr5 <- read.table("analyses/004_polymorphism_annas_snps/pi_annas_snps/vcftools/vcftools_chr5_win500000_step100000.windowed.pi",header=T)
+###Plot diversity
+#Read info about centromeres
+centr <- read.csv2("/groups/nordborg/user/elizaveta.grigoreva/genome_evolution_pacbio/analyses/007_genes_enrichment/feature_counts_tair10_pacbio/centromere_info_araport11.txt", sep="\t")
+
+chr1 <- ggplot(data=pi.chr1, aes(x=BIN_START, y=(PI))) +
+    geom_line() + expand_limits(x = c(min(pi.chr1$BIN_START), max(pi.chr1$BIN_START)), y = c(0, NA)) +
+    scale_x_continuous(labels = unit_format(unit = "M", scale = 1e-6))+theme_classic() +xlab("Mbp")+ylab("PI")+geom_point() + ggtitle("Chr 1, Anna's SNPs, win 500KB, 100KB sliding") +  geom_hline(yintercept =  0.006856697,  color = "blue", size=1.5) 
+
+chr2 <- ggplot(data=pi.chr2, aes(x=BIN_START, y=(PI*100))) +
+  geom_line() + expand_limits(x = c(min(pi.chr1$BIN_START), max(pi.chr2$BIN_START)), y = c(0, NA)) +
+  scale_x_continuous(labels = unit_format(unit = "M", scale = 1e-6))+theme_classic() +xlab("Mbp")+ylab("PI %")+geom_point() + ggtitle("Chr 2, Anna's SNPs, win 500KB, 100KB sligin") + geom_vline(xintercept = 3823791,  color = "blue", size=1.5) + geom_vline(xintercept = 6045243,  color = "blue", size=1.5)
+
+
+chr3 <- ggplot(data=pi.chr3, aes(x=BIN_START, y=(PI*100))) +
+  geom_line() + expand_limits(x = c(min(pi.chr1$BIN_START), max(pi.chr3$BIN_START)), y = c(0, NA)) +
+  scale_x_continuous(labels = unit_format(unit = "M", scale = 1e-6))+theme_classic() +xlab("Mbp")+ylab("PI %")+geom_point() + ggtitle("Chr 3, Anna's SNPs, win 500KB, 100KB sligin") + geom_vline(xintercept = 13597187,  color = "blue", size=1.5) + geom_vline(xintercept = 15733925,  color = "blue", size=1.5)
+
+chr4 <- ggplot(data=pi.chr4, aes(x=BIN_START, y=(PI*100))) +
+  geom_line() + expand_limits(x = c(min(pi.chr1$BIN_START), max(pi.chr4$BIN_START)), y = c(0, NA)) +
+  scale_x_continuous(labels = unit_format(unit = "M", scale = 1e-6))+theme_classic() +xlab("Mbp")+ylab("PI %")+geom_point() + ggtitle("Chr 4, Anna's SNPs, win 500KB, 100KB sligin") + geom_vline(xintercept = 4203901,  color = "blue", size=1.5) + geom_vline(xintercept = 6977949,  color = "blue", size=1.5)
+
+chr5 <- ggplot(data=pi.chr5, aes(x=BIN_START, y=(PI*100))) +
+  geom_line() + expand_limits(x = c(min(pi.chr1$BIN_START), max(pi.chr5$BIN_START)), y = c(0, NA)) +
+  scale_x_continuous(labels = unit_format(unit = "M", scale = 1e-6))+theme_classic() +xlab("Mbp")+ylab("PI %")+geom_point() + ggtitle("Chr 5, Anna's SNPs, win 500KB, 100KB sligin") + geom_vline(xintercept = 11784130,  color = "blue", size=1.5) + geom_vline(xintercept = 14551809,  color = "blue", size=1.5)
+
+#Arrange in one plot
+library("gridExtra")
+grid.arrange(chr1, chr2, chr3, chr4,chr5, ncol=2, nrow =3)
+```
+
+
+```{r}
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+###More fancy plotting
+##filter(pi.chr1 ,N_VARIANTS>10) %>% 
+  ggplot(aes(data=y=pi.chr1,x=BIN_START))+
+  geom_point(color=cbPalette[1])+
+  geom_smooth(method="loess",span=0.1,color=cbPalette[1])+
+    ggtitle("CHR5 pi ( > 1Kb sequence per 100kb window)")+
+    xlab("Mb") + 
+    ylab(expression(hat(theta[pi])))+
+    ## scale_x_continuous(labels = unit_format(unit = "M", scale = 1e-6))+
+    theme(axis.text=element_text(size=14), plot.title=element_text(size=18),axis.title=element_text(size=18,face="bold"))  
+```
+
+
+```{r}
+
+# Provide path to input. Can be pi or Dxy.
+# NOTE: this is the only line you should have to edit to run this code:
+inp<-read.table("/groups/nordborg/user/elizaveta.grigoreva/genome_evolution_pacbio/analyses/004_polymorphism_annas_snps/pi_annas_snps/pixy/pixi_chr1_win500000_pi.txt",sep="\t",header=T)
+
+# Find the chromosome names and order them: first numerical order, then any non-numerical chromosomes
+#   e.g., chr1, chr2, chr22, chrX
+chroms <- unique(inp$chromosome)
+chrOrder <- sort(chroms)
+inp$chrOrder <- factor(inp$chromosome,levels=chrOrder)
+
+# Plot pi for each population found in the input file
+# Saves a copy of each plot in the working directory
+if("avg_pi" %in% colnames(inp)){
+    pops <- unique(inp$pop)
+    for (p in pops){
+        thisPop <- subset(inp, pop == p)
+        # Plot stats along all chromosomes:
+        popPlot <- ggplot(thisPop, aes(window_pos_1, avg_pi, color=chrOrder)) +
+            geom_point()+
+            facet_grid(. ~ chrOrder)+
+            labs(title=paste("Pi for population", p))+
+            labs(x="Position of window start", y="Pi")+
+            scale_color_manual(values=rep(c("black","gray"),ceiling((length(chrOrder)/2))))+
+            theme_classic()+
+            theme(legend.position = "none") + geom_line() +  scale_x_continuous(labels = unit_format(unit = "M", scale = 1e-6))+theme_classic()
+    }
+}
+popPlot
+```
+```{r}
+#Rank VCFtools diversity data
+#Order PI estimations. More than mean and less than mean (two groups)
+pi.chr1_variable_regions <- pi.chr1 %>% 
+  mutate(group = if_else(PI>median(PI), 'increased PI', 'decreased PI'))
+
+
+#Compare using Wilxocon test
+##Before significance testing
+ggplot(pi.chr1_variable_regions) +
+  aes(x = group, y = PI) +
+  geom_boxplot(fill = "#0c4c8a") +
+  theme_minimal()
+
+pi.chr1_variable_regions$group <- factor(pi.chr1_variable_regions$group,
+  levels = c("increased PI", "decreased PI")
+)
+
+wilcox.test(pi.chr1_variable_regions$PI ~ pi.chr1_variable_regions$group)
+
+#Estimate Density of PI
+centr1_1st_part <- 14841109-2000000 #+/- 2MB
+centr1_2nd_part <- 17559778+2000000
+
+##Check where increased regions are placed
+
+pi.chr1_variable_regions <- pi.chr1 %>% 
+  mutate(group = if_else(BIN_START>centr1_1st_part &  BIN_START<centr1_2nd_part, 'pericentromeric', 'arms'))
+
+ggplot(pi.chr1_variable_regions) +
+  aes(x = group, y = PI) +
+  geom_boxplot(fill = "purple") +
+  theme_minimal()
+
+wilcox.test(pi.chr1_variable_regions$PI ~ pi.chr1_variable_regions$group)
+head(ranks)
+
+```
+
+```{r}
+#Enrichment analysis
+pi.chr1_variable_regions <- pi.chr1 %>% 
+  mutate(group = if_else(PI>median(PI), 'increased PI', 'decreased PI'))
+
+#Read gff3 file
+gtf <- fread("/groups/nordborg/user/elizaveta.grigoreva/genome_evolution_pacbio/data/tair10/GCF_000001735-shorter.GTF_FIXED.gtf")
+setnames(gtf, names(gtf),c("chr","source","type","start","end","score","strand","phase","attributes") )
+genes <- gtf[type == "gene"]
+##Extract attributes
+extract_attributes <- function(gtf_attributes, att_of_interest){
+  att <- strsplit(gtf_attributes, "; ")
+  att <- gsub("\"","",unlist(att))
+  if(!is.null(unlist(strsplit(att[grep(att_of_interest, att)], " ")))){
+    return( unlist(strsplit(att[grep(att_of_interest, att)], " "))[2])
+  }else{
+    return(NA)}
+}
+
+genes$gene_id <- unlist(lapply(genes$attributes, extract_attributes, "gene_id"))
+##If regions contained an increased PI, set 1, otherwise set 0
+genes_enrichment <- genes %>% mutate(Log2Fc = if_else(start>centr1_1st_part &  start<centr1_2nd_part, '1', '0'))
+
+genes_enrichment2 <- genes_enrichment %>% select(gene_id, Log2Fc, chr, start)
+genes_enrichment2 <- genes_enrichment2[genes_enrichment2$chr=="NC_003070.9",]
+#Create a decreased set
+genes_enrichment_decreased <-  genes_enrichment2[genes_enrichment2$start<centr1_1st_part | genes_enrichment2$start>centr1_2nd_part,]
+#Create and increased set
+genes_enrichment_increased <- genes_enrichment2[genes_enrichment2$start>centr1_1st_part & genes_enrichment2$start<centr1_2nd_part,]
+
+genes_enrichment3 <- genes_enrichment_decreased %>% 
+  mutate(Log2Fc = seq(0,by = -0.0001,length.out = nrow(genes_enrichment_decreased)))
+
+genes_enrichment4 <- genes_enrichment_increased %>% 
+  mutate(Log2Fc = seq(0,by = 0.001,length.out = nrow(genes_enrichment_increased)))
+
+genes_enrichment5 <- rbind(genes_enrichment3,genes_enrichment4)
+genes_enrichment5 
+
+##Create ranks
+ranks <- as.numeric(genes_enrichment5$Log2Fc)
+names(ranks) <- genes_enrichment5$gene_id
+```
+
+```{r}
+#FGSEA analysis
+library(devtools)
+library(data.table)
+library(ggplot2)
+install.packages("org.At.tair.db")
+library(org.At.tair.db)
+library(clusterProfiler)
+
+
+#Cutsom script  for importing gmt file
+
+custom_gmt <- function(gmt.file, category, include = T)
+{
+  ### Custom function to import gmt from plantGSEA so that fgsea likes it
+  ### Can either filter out or select some categories (second column)
+  ### To select all exclude something non-existent
+  lines <- str_split(readLines(gmt.file), "\t")
+  if (include)
+  {
+    lines <- Filter(function(x) x[2] == category, lines)
+  } else
+    lines <- Filter(function(x) x[2] != category, lines)
+  pathways <- lapply(lines, function(x) tail(x, 1) %>% str_split(",") %>% unlist)
+  names(pathways) <- sapply(lines, head, 1)
+  pathways
+}
+#Upload GMT file
+custom_gmt("/groups/nordborg/user/elizaveta.grigoreva/genome_evolution_pacbio/data/tair10/Ara.DetailInfo", category = "", include = T)
+gmt_arabidopsis <- custom_gmt(gmt.file = "/groups/nordborg/user/elizaveta.grigoreva/genome_evolution_pacbio/data/tair10/Ara.DetailInfo", category = "Literature", include = F)
+
+#Run fgsea
+fgseaRes <- fgsea(pathways=gmt_arabidopsis, stats =ranks)
+
+head(fgseaRes)
+
+#Top of the pathways
+tail(fgseaRes[order(padj, -abs(NES)), ], n=10)
+#Extract topup and topdown genes
+topUp <- fgseaRes %>% 
+    filter(ES > 0) %>% 
+    top_n(10, wt=-padj)
+head(topUp)
+topUp$leadingEdge
+
+topDown <- fgseaRes %>% 
+    filter(ES < 0) %>% 
+    top_n(40, wt=-padj)
+topDown$leadingEdge
+topPathways <- bind_rows(topUp, topDown) %>% 
+    arrange(-ES)
+head(topUp)
+topUp <- as.data.frame(topUp)
+
+#Visualize results
+ggplot(topUp, aes(reorder(pathway, NES), NES)) +
+  geom_col(aes(fill=padj<0.05)) +
+  coord_flip() +
+  labs(x="Pathway", y="Normalized Enrichment Score",) + 
+  theme_minimal()
+
+```
+
+```{r}
+library(enrichplot)
+library(clusterProfiler)
+#Clusterprofiler
+
+# we want the log2 fold change 
+original_gene_list <- genes_enrichment5$Log2Fc
+
+# name the vector
+names(original_gene_list) <- genes_enrichment5$gene_id
+
+# omit any NA values 
+gene_list<-na.omit(original_gene_list)
+
+# sort the list in decreasing order (required for clusterProfiler)
+gene_list = sort(gene_list, decreasing = TRUE)
+
+
+gse <- gseGO(geneList=gene_list, 
+             ont ="ALL", 
+             keyType = "ENSEMBL", 
+             nPerm = 10000, 
+             minGSSize = 3, 
+             maxGSSize = 800, 
+             pvalueCutoff = 0.05, 
+             verbose = TRUE, 
+             OrgDb = org.At.tair.db, 
+             pAdjustMethod = "none")
+
+
+
+```
+
+```{r}
+###Missing data per site
+miss <- read.csv("/groups/nordborg/user/elizaveta.grigoreva/genome_evolution_pacbio/analyses/004_polymorphism_annas_snps/pi_annas_snps/vcftools/chr1_missing.lmiss", sep="\t")
+hist(miss$F_MISS, breaks=200)
+
+ggplot(data=miss, aes(x=POS, y=(F_MISS*100))) +
+  geom_line()  +
+  scale_x_continuous(labels = unit_format(unit = "M", scale = 1e-6))+theme_classic() +xlab("Mbp")+ylab("miss_%") 
+
+miss_more_than30 <- miss[miss$F_MISS>0.3,]
+
+ggplot(data=miss_more_than30, aes(x=POS, y=(F_MISS*100))) +
+  geom_line()  +
+  scale_x_continuous(labels = unit_format(unit = "M", scale = 1e-6))+theme_classic() +xlab("Mbp")+ylab("miss_%")
+
+miss_more_than40 <- miss[miss$F_MISS>0.20,]
+hist(miss_more_than40$F_MISS) + scale_x_continuous(labels = unit_format(unit = "M", scale = 1e-6))+theme_classic() +xlab("Mbp")+ylab("miss_%")
+
+#Отсо
+ggplot(data= miss_more_than40, aes(x=POS,y=F_MISS)) +
+  geom_point()
+
+###Тест что количество мисингов значимо отличается
+
+miss_several_fold_centr <- miss[ miss$POS >10000000 &  miss$POS < 25000000 , ]
+miss_several_fold_arm <- miss[ miss$POS > 10000000, ]
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
